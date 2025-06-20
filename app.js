@@ -8,7 +8,7 @@ config();
 const app = express();
 const port = process.env.PORT || 3000;
 
-// 設定 LINE SDK
+// LINE SDK 設定
 const lineConfig = {
   channelAccessToken: process.env.LINE_CHANNEL_ACCESS_TOKEN,
   channelSecret: process.env.LINE_CHANNEL_SECRET,
@@ -16,18 +16,21 @@ const lineConfig = {
 
 const lineClient = new Client(lineConfig);
 
-// 設定 OpenAI SDK
+// OpenAI 設定
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
 
-app.post('/callback', middleware(lineConfig), async (req, res) => {
+app.use(middleware(lineConfig));
+app.use(express.json());
+
+app.post('/callback', async (req, res) => {
   try {
     const events = req.body.events;
     const results = await Promise.all(events.map(handleEvent));
     res.status(200).json(results);
   } catch (err) {
-    console.error('❌ Webhook 處理錯誤:', err);
+    console.error('❌ Webhook 錯誤:', err);
     res.status(500).end();
   }
 });
@@ -45,17 +48,24 @@ async function handleEvent(event) {
       messages: [
         {
           role: 'user',
-          content: `請你根據「${userInput}」這種食物，回覆格式如下，不要多加說明：
+          content: `
+你是一個營養師，根據以下輸入的食物名稱與公克數，請換算出營養資訊。
+回覆格式如下，且必須使用繁體中文、不要多加說明，也不要省略任何欄位：
 
 食物：xxx  
-熱量：約 xxx 大卡 / 100g  
+重量：xxx g  
+熱量：約 xxx 大卡  
 蛋白質：約 xxx g  
 脂肪：約 xxx g  
-碳水化合物：約 xxx g`,
+碳水化合物：約 xxx g
+
+使用100g的資料作為基準，再根據輸入的重量（若有）進行簡單換算。
+使用者輸入：「${userInput}」`,
         },
       ],
+      max_tokens: 180,
+      temperature: 0.2,
     });
-
 
     const aiReply = completion.choices[0].message.content.trim();
 
