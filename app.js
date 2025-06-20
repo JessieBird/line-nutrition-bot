@@ -8,7 +8,6 @@ config();
 const app = express();
 const port = process.env.PORT || 3000;
 
-// LINE SDK 設定
 const lineConfig = {
   channelAccessToken: process.env.LINE_CHANNEL_ACCESS_TOKEN,
   channelSecret: process.env.LINE_CHANNEL_SECRET,
@@ -16,21 +15,17 @@ const lineConfig = {
 
 const lineClient = new Client(lineConfig);
 
-// OpenAI 設定
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
 
-app.use(middleware(lineConfig));
-app.use(express.json());
-
-app.post('/callback', async (req, res) => {
+app.post('/callback', middleware(lineConfig), async (req, res) => {
   try {
     const events = req.body.events;
     const results = await Promise.all(events.map(handleEvent));
     res.status(200).json(results);
   } catch (err) {
-    console.error('❌ Webhook 錯誤:', err);
+    console.error('❌ Webhook 處理錯誤:', err);
     res.status(500).end();
   }
 });
@@ -41,6 +36,14 @@ async function handleEvent(event) {
   }
 
   const userInput = event.message.text;
+  const { food, weight } = extractFoodAndWeight(userInput);
+
+  if (!food) {
+    return lineClient.replyMessage(event.replyToken, {
+      type: 'text',
+      text: '⚠️ 請輸入「重量 + 食物名稱」，例如「150g 雞胸肉」',
+    });
+  }
 
   try {
     const completion = await openai.chat.completions.create({
@@ -48,30 +51,37 @@ async function handleEvent(event) {
       messages: [
         {
           role: 'user',
-          content: `
-你是一個營養師，根據以下輸入的食物名稱與公克數，請換算出營養資訊。
-回覆格式如下，且必須使用繁體中文、不要多加說明，也不要省略任何欄位：
+          content: `請告訴我「${food}」每 100 克的營養成分，格式如下，不要加說明：
 
-食物：xxx  
-重量：xxx g  
-熱量：約 xxx 大卡  
+熱量：約 xxx 大卡 / 100g  
 蛋白質：約 xxx g  
 脂肪：約 xxx g  
-碳水化合物：約 xxx g
-
-使用100g的資料作為基準，再根據輸入的重量（若有）進行簡單換算。
-使用者輸入：「${userInput}」`,
+碳水化合物：約 xxx g`,
         },
       ],
-      max_tokens: 180,
-      temperature: 0.2,
     });
 
-    const aiReply = completion.choices[0].message.content.trim();
+    const aiText = completion.choices[0].message.content.trim();
+    const parsed = parseNutritionFromAI(aiText);
+
+    if (!parsed) {
+      return lineClient.replyMessage(event.replyToken, {
+        type: 'text',
+        text: '⚠️ 無法解析營養資訊，請稍後再試或更換食物名稱。',
+      });
+    }
+
+    const multiplier = weight / 100;
+    const replyText = `食物：${food}
+重量：${weight}g
+熱量：約 ${Math.round(parsed.calories * multiplier)} 大卡
+蛋白質：約 ${(parsed.protein * multiplier).toFixed(1)}g
+脂肪：約 ${(parsed.fat * multiplier).toFixed(1)}g
+碳水化合物：約 ${(parsed.carbs * multiplier).toFixed(1)}g`;
 
     return lineClient.replyMessage(event.replyToken, {
       type: 'text',
-      text: aiReply,
+      text: replyText,
     });
   } catch (error) {
     console.error('🔴 ChatGPT 回覆錯誤：', error.status, error.message);
@@ -79,6 +89,31 @@ async function handleEvent(event) {
       type: 'text',
       text: '❌ 抱歉，我暫時無法取得資料，請稍後再試！',
     });
+  }
+}
+
+// 萃取重量與食物名稱，例如「150g 雞胸肉」
+function extractFoodAndWeight(input) {
+  const match = input.match(/(\d+)\s*(g|公克)?\s*(.+)/i);
+  if (match) {
+    const weight = parseInt(match[1]);
+    const food = match[3].trim();
+    return { weight, food };
+  } else {
+    return { weight: 100, food: input.trim() }; // 預設當作 100g
+  }
+}
+
+// 解析 GPT 回覆內容
+function parseNutritionFromAI(text) {
+  try {
+    const cal = parseFloat(text.match(/熱量：約\s*([\d.]+)/)?.[1] || 0);
+    const protein = parseFloat(text.match(/蛋白質：約\s*([\d.]+)/)?.[1] || 0);
+    const fat = parseFloat(text.match(/脂肪：約\s*([\d.]+)/)?.[1] || 0);
+    const carbs = parseFloat(text.match(/碳水化合物：約\s*([\d.]+)/)?.[1] || 0);
+    return { calories: cal, protein, fat, carbs };
+  } catch {
+    return null;
   }
 }
 
