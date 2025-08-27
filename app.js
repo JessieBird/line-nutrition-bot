@@ -19,6 +19,22 @@ const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
 
+// 新增根路由
+app.get('/', (req, res) => {
+  res.json({
+    message: 'LINE Nutrition Bot is running!',
+    status: 'online'
+  });
+});
+
+// 新增健康檢查路由  
+app.get('/health', (req, res) => {
+  res.json({
+    status: 'healthy',
+    service: 'nutrition-bot'
+  });
+});
+
 app.post('/callback', middleware(lineConfig), async (req, res) => {
   try {
     const events = req.body.events;
